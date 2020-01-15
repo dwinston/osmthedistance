@@ -1,5 +1,7 @@
 beautifulsoup4==4.8.2
+haversine==2.2.0
 lxml==4.4.2
+pydash==4.7.6
 pymongo==3.10.1
 requests==2.22.0
 setuptools-scm==3.3.3

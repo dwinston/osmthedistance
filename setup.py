@@ -19,8 +19,10 @@ setup(
     license="AGPL",
     packages=find_packages(),
     install_requires=[
+        "beautifulsoup4",
         "lxml",
         "pymongo",
+        "requests",
         "tqdm",
     ],
     classifiers=[
@@ -30,4 +32,5 @@ setup(
         "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
         "Topic :: Scientific/Engineering :: Information Analysis",
     ],
+    python_requires='>=3.5',
 )

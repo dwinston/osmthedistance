@@ -2,7 +2,7 @@ from itertools import tee
 
 from haversine import haversine
 import pydash as py_
-from pymongo import MongoClient
+from pymongo import GEOSPHERE, MongoClient
 from tqdm import tqdm
 
 
@@ -66,6 +66,8 @@ class Mongo:
         vertex_coll.drop()
         vertex_coll.insert_many(docs)
         print(f"Saved vertices to db collection {vertex_coll.name}")
+        print(f"Creating index to efficiently query vertices by geolocation...")
+        vertex_coll.create_index([("loc", GEOSPHERE)])
 
         # Iterate over all predicate-ways to obtain inter-vertex distances (edge weights) along each way
         edges = []
@@ -86,6 +88,57 @@ class Mongo:
         edge_coll.drop()
         edge_coll.insert_many([{"v": [e[0], e[1]], "d": e[2]} for e in edges])
         print(f"Saved edges to db collection {edge_coll.name}")
+        edge_coll.create_index("v")
+        print(f"Creating index to efficiently query edges by vertices...")
+
+    def subgraph_docs(self, predicate, start_point, end_point, max_distance):
+        """
+        Get all vertex and edge docs satisfying predicate along possible routes.
+
+        A route is considered possible if one can get from start_point to end_point in at most max_distance. For
+        example, if start_point == end_point, all vertices within a radius of (max_distance / 2), along with all edges
+        connecting these vertices, would be returned.
+
+        If start_point != end_point, it is sufficient to check if a candidate vertex is in the union of
+        half-maxdistance-radius disks surrounding each of start_point and end_point. Suppose a vertex was not. Then it
+        represents travel more than half-maxdistance from start_point and more than half-maxdistance remains to get to
+        end_point.
+
+        start_point and end_point should be dicts of the form
+        ```
+        {
+          "type" : "Point",
+          "coordinates" : [
+            -74.3020293, # -180 <= longitude <= 180
+           40.5551532, # -90 <= latitude <= 90
+          ]
+        }
+        ```
+        or they may be 2-tuples of the form (longitude, latitude).
+
+        max_distance should be given in miles.
+        """
+        vertex_coll = self.db[f"vertex_{predicate.__name__}"]
+        edge_coll = self.db[f"edge_{predicate.__name__}"]
+        start_coords = start_point["coordinates"] if isinstance(start_point, dict) else list(start_point)
+        end_coords = end_point["coordinates"] if isinstance(end_point, dict) else list(end_point)
+        vertices = list(vertex_coll.find({
+            "$or": [
+                {"loc": {"$nearSphere": {
+                    "$geometry": {"type": "Point", "coordinates": start_coords},
+                    "$maxDistance": max_distance / 2 }}},
+                {"loc": {"$nearSphere": {
+                    "$geometry": {"type": "Point", "coordinates": end_coords},
+                    "$maxDistance": max_distance / 2}}},
+            ]}))
+        edges = []
+        vids = {v["_id"] for v in vertices}
+        for doc in edge_coll.find({"v": {"$in": list(vids)}}):
+            edge_vids = set(doc["v"])
+            if edge_vids & vids == edge_vids:  # both edge vertices in vids
+                del doc["_id"]
+                edges.append(doc)
+        return {"edges": edges, "vertices": vertices}
 
 
 def pairwise(iterable):

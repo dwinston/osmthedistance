@@ -80,18 +80,18 @@ class Mongo:
             for nid in node_ids:
                 if nid in vertex_ids:
                     if last_node_id is not None:
-                        edges.append(make_edge(last_node_id, nid, nodes))
+                        edges.append((last_node_id, nid, distance_along(last_node_id, nid, nodes)))
                         last_node_id = nid
                     else:
                         last_node_id = nid
         edge_coll = self.db[f"edge_{predicate.__name__}"]
         edge_coll.drop()
-        edge_coll.insert_many([{"v": [e[0], e[1]], "d": e[2]} for e in edges])
+        edge_coll.insert_many([{"v": [start_nid, end_nid], "d": distance} for start_nid, end_nid, distance in edges])
         print(f"Saved edges to db collection {edge_coll.name}")
         edge_coll.create_index("v")
         print(f"Creating index to efficiently query edges by vertices...")
 
-    def subgraph_docs(self, predicate, start_point, end_point, max_distance):
+    def subgraph_docs(self, predicate, points, max_distance):
         """
         Get all vertex and edge docs satisfying predicate along possible routes.
 
@@ -104,35 +104,27 @@ class Mongo:
         represents travel more than half-maxdistance from start_point and more than half-maxdistance remains to get to
         end_point.
 
-        start_point and end_point should be dicts of the form
-        ```
-        {
-          "type" : "Point",
-          "coordinates" : [
-            -74.3020293, # -180 <= longitude <= 180
-           40.5551532, # -90 <= latitude <= 90
-          ]
-        }
-        ```
-        or they may be 2-tuples of the form (longitude, latitude).
-
+        points should be a sequence of 2-tuples of the form (longitude, latitude) where
+        -180 <= longitude <= 180 and -90 <= latitude <= 90.
         max_distance should be given in miles.
+
         """
+        gj_points = [{"loc": {"type": "Point", "coordinates": p}, "_id": id(p)} for p in points]
+        if distance_along(gj_points[0], gj_points[-1], gj_points) > max_distance:
+            raise Exception("start_point and end_point are greater than max_distance apart!")
+
         vertex_coll = self.db[f"vertex_{predicate.__name__}"]
         edge_coll = self.db[f"edge_{predicate.__name__}"]
-        start_coords = start_point["coordinates"] if isinstance(start_point, dict) else list(start_point)
-        end_coords = end_point["coordinates"] if isinstance(end_point, dict) else list(end_point)
-        vertices = list(vertex_coll.find({
-            "$or": [
-                {"loc": {"$nearSphere": {
-                    "$geometry": {"type": "Point", "coordinates": start_coords},
-                    "$maxDistance": max_distance / 2 }}},
-                {"loc": {"$nearSphere": {
-                    "$geometry": {"type": "Point", "coordinates": end_coords},
-                    "$maxDistance": max_distance / 2}}},
-            ]}))
-        edges = []
+        vertices = []
+        for p in points:
+            vertices.extend(list(vertex_coll.find({"loc": {"$nearSphere": {
+                "$geometry": {"type": "Point", "coordinates": p},
+                "$maxDistance": (max_distance / 2) * 1609.34  # miles to meters
+            }}})))
         vids = {v["_id"] for v in vertices}
+        # TODO fix to remove duplicates!
+        vertices = [v for v in vertices if v["_id"] in vids]
+        edges = []
         for doc in edge_coll.find({"v": {"$in": list(vids)}}):
             edge_vids = set(doc["v"])
             if edge_vids & vids == edge_vids:  # both edge vertices in vids
@@ -148,12 +140,14 @@ def pairwise(iterable):
     return zip(a, b)
 
 
-def make_edge(from_node, to_node, nodes):
-    def lat_lon(node):
-        coords = node["loc"]["coordinates"]
-        return coords[1], coords[0]
-    distance = 0
+def lat_lon(node):
+    coords = node["loc"]["coordinates"]
+    return coords[1], coords[0]
+
+
+def distance_along(from_node, to_node, nodes):
     adding = False
+    distance = 0
     for n1, n2 in pairwise(nodes):
         if n1["_id"] == from_node:
             adding = True
@@ -161,7 +155,7 @@ def make_edge(from_node, to_node, nodes):
             distance += haversine(lat_lon(n1), lat_lon(n2), unit='mi')
         if n2["_id"] == to_node:
             break
-    return from_node, to_node, distance
+    return distance
 
 
 def to_geojson(docs):

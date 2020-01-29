@@ -1,9 +1,12 @@
-from itertools import tee
+from collections import defaultdict
+from operator import itemgetter
 
-from haversine import haversine
-import pydash as py_
 from pymongo import GEOSPHERE, MongoClient
 from tqdm import tqdm
+
+from osmthedistance.util import (
+    distance_along, to_geojson, process_in_chunks, remdups
+)
 
 
 class Mongo:
@@ -75,7 +78,9 @@ class Mongo:
         print("Finding edges and computing their weights by Haversine formula...")
         for way in tqdm(self.db.way.find({"id": {"$in": way_ids}}, ["nd.ref"]), total=len(way_ids)):
             node_ids = [o["ref"] for o in way["nd"]]
-            nodes = to_geojson(self.db.node.find({"id": {"$in": node_ids}}, ["id", "lat", "lon"]))
+            nodes_unsorted = to_geojson(self.db.node.find({"id": {"$in": node_ids}}, ["id", "lat", "lon"]))
+            _nodes_by_id = {n["_id"]: n for n in nodes_unsorted}
+            nodes = [_nodes_by_id[nid] for nid in node_ids]
             last_node_id = None
             for nid in node_ids:
                 if nid in vertex_ids:
@@ -115,63 +120,27 @@ class Mongo:
 
         vertex_coll = self.db[f"vertex_{predicate.__name__}"]
         edge_coll = self.db[f"edge_{predicate.__name__}"]
-        vertices = []
-        for p in points:
-            vertices.extend(list(vertex_coll.find({"loc": {"$nearSphere": {
+        vertex_docs = []
+        waypoints = []
+        for p, gjp in zip(points, gj_points):
+            docs = list(vertex_coll.find({"loc": {"$nearSphere": {
                 "$geometry": {"type": "Point", "coordinates": p},
                 "$maxDistance": (max_distance / 2) * 1609.34  # miles to meters
-            }}})))
-        vids = {v["_id"] for v in vertices}
-        # TODO fix to remove duplicates!
-        vertices = [v for v in vertices if v["_id"] in vids]
-        edges = []
+            }}}))
+            try:
+                waypoints.append({
+                    "id": docs[0]["_id"],
+                    "d": distance_along(gjp["_id"], docs[0]["_id"], [gjp, docs[0]]),
+                })
+            except IndexError:
+                raise Exception(f"Zero vertices found within {max_distance} miles of {p}!")
+            vertex_docs.extend(docs)
+        vids = {v["_id"] for v in vertex_docs}
+        vertex_docs = remdups(vertex_docs, key=itemgetter("_id"))
+        edge_docs = []
         for doc in edge_coll.find({"v": {"$in": list(vids)}}):
             edge_vids = set(doc["v"])
             if edge_vids & vids == edge_vids:  # both edge vertices in vids
                 del doc["_id"]
-                edges.append(doc)
-        return {"edges": edges, "vertices": vertices}
-
-
-def pairwise(iterable):
-    """s -> (s0,s1), (s1,s2), (s2, s3), ..."""
-    a, b = tee(iterable)
-    next(b, None)
-    return zip(a, b)
-
-
-def lat_lon(node):
-    coords = node["loc"]["coordinates"]
-    return coords[1], coords[0]
-
-
-def distance_along(from_node, to_node, nodes):
-    adding = False
-    distance = 0
-    for n1, n2 in pairwise(nodes):
-        if n1["_id"] == from_node:
-            adding = True
-        if adding:
-            distance += haversine(lat_lon(n1), lat_lon(n2), unit='mi')
-        if n2["_id"] == to_node:
-            break
-    return distance
-
-
-def to_geojson(docs):
-    """Returns node collection documents in GeoJSON format."""
-    return [{
-        "loc": {"type": "Point", "coordinates": [float(doc["lon"]), float(doc["lat"])]},
-        "_id": doc["id"],
-    } for doc in docs]
-
-
-def process_in_chunks(keys, process, chunk_size=10000):
-    docs = []
-    chunks = py_.chunk(keys, chunk_size)
-    pbar = tqdm(total=len(keys))
-    for chunk in chunks:
-        docs.extend(process(chunk))
-        pbar.update(len(chunk))
-    pbar.close()
-    return docs
+                edge_docs.append(doc)
+        return vertex_docs, edge_docs, waypoints

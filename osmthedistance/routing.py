@@ -1,5 +1,6 @@
-from collections import defaultdict, deque
+from collections import deque
 
+from haversine import haversine, Unit
 import networkx as nx
 
 
@@ -17,7 +18,7 @@ class RouteGraph:
         ])
 
     def neighbors(self, me):
-        return [(n, self.G.nodes[n]['coords']) for n in self.G.neighbors(me)]
+        return [{"id": n, "coords": self.G.nodes[n]['coords']} for n in self.G.neighbors(me)]
 
     def routes(self, goal_distance, waypoints, tolerance=0.2, max_turns=10, turn_angle=60, turn_radius=15.24):
         """
@@ -46,15 +47,37 @@ class RouteGraph:
         # - Hit distance within tolerance. Prune if distance > (goal_distance + tolerance).
         # - At most max_turns turns. Prune if n_turns > max_turns.
 
-        distance = waypoints[0].get("d", 0)
+        added_distance = waypoints[0].get("d", 0) + waypoints[-1].get("d", 0)
+        min_distance = (goal_distance - added_distance) * (1 - tolerance)
+        max_distance = (goal_distance - added_distance) * (1 + tolerance)
 
-        considering = deque([Route(waypoints[0]["id"])])
+        waypoint_ids = [w["id"] for w in waypoints]
+        start_node = {"id": waypoint_ids[0], "coords": self.G.nodes[waypoint_ids[0]]["coords"]}
+        completed = []
+        considering = deque([Route(nodes=[start_node], waypoints_hit=[start_node])])
+        while len(considering):
+            route = considering.popleft()
+            routes = self.extend_by_one_node(route)
+            # Determine which routes will be enqueued, discarded, or added to completed
+            for new_r in routes:
+                if new_r.nodes[-1]["id"] == waypoints[len(new_r.waypoints_hit)]["id"]:
+                    # TODO stuff
+                    pass
+
+    def extend_by_one(self, route):
+        routes = []
+        last_lat_lon = route.nodes[-1]["coords"][::-1]
+        for node, coords in self.neighbors(route.nodes[-1]):
+            # update distance
+            distance = route.distance + haversine(last_lat_lon, coords[::-1], unit=Unit.METERS)
+            # update waypoints_hit
+
+            # update n_turns
 
 
 class Route:
-    def __init__(self, nodes, distance=0, n_turns=0, n_waypoints_hit=0):
+    def __init__(self, nodes, distance=0, n_turns=0, waypoints_hit=None):
         self.nodes = nodes
         self.distance = distance
         self.n_turns = n_turns
-        self.n_waypoints_hit = n_waypoints_hit
-
+        self.waypoints_hit = waypoints_hit or []

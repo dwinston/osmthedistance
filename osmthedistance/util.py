@@ -1,6 +1,7 @@
 from itertools import tee
 from math import radians, sqrt, sin, asin, degrees, atan, cos, atan2
 
+import ipdb
 from haversine import haversine, Unit
 from haversine.haversine import get_avg_earth_radius
 from tqdm import tqdm
@@ -16,7 +17,7 @@ def pairwise(iterable):
 
 def triplewise(iterable):
     """s -> (s0,s1,s2), (s1,s2,s3), (s2,s3,s4), ..."""
-    a, b, c = tee(iterable, n=3)
+    a, b, c = tee(iterable, 3)
     next(b, None)
     next(c, None)
     next(c, None)
@@ -75,7 +76,10 @@ def remdups(seq, key=id):
 
 
 def surface_turn_angle(point1, point2, point3):
-    """Angle of turn going from point1 to point3 through point2."""
+    """Angle of turn going from point1 to point3 through point2.
+
+    Angle is positive (e.g. 90 degrees) when going left, and negative (e.g. -90 degrees) when going right.
+    """
     # unpack latitude/longitude
     lat1, lng1 = point1
     lat2, lng2 = point2
@@ -92,10 +96,14 @@ def surface_turn_angle(point1, point2, point3):
     c = sqrt((lat1 - lat3) ** 2 + (lng1 - lng3) ** 2)  # not actually traversed
 
     # law of haversines to get angle C of spherical triangle.
-    angle = degrees(2 * asin(sqrt(
-        (sin(c * 0.5) ** 2 - sin((a - b) * 0.5) ** 2) /
-        (sin(a) * sin(b))
-    )))
+    try:
+        angle = degrees(2 * asin(sqrt(
+            (sin(c * 0.5) ** 2 - sin((a - b) * 0.5) ** 2) /
+            (sin(a) * sin(b))
+        )))
+    except ZeroDivisionError:
+        print(a, b)
+        ipdb.set_trace()
 
     # get direction of "out-of-plane" component of cross product => left or right turn
     ai, aj = lng2 - lng1, lat2 - lat1

@@ -22,6 +22,8 @@ setup(
         "beautifulsoup4",
         "haversine",
         "lxml",
+        "matplotlib",
+        "networkx",
         "pydash",
         "pymongo",
         "requests",
